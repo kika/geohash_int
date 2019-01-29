@@ -1,5 +1,5 @@
 name: "geohash_int"
-version: 0.1.1
+version: 0.1.2
 homepage: https://github.com/kika/geohash_int
 description: Library to encode and decode integer based Geo hash codes
 author: "Kirill Pertsev <kika@kikap.com>"
