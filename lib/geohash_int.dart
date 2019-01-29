@@ -30,6 +30,7 @@
  *THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+import 'dart:math' as Math;
 import 'dart:typed_data';
 
 enum GeoDirection {
@@ -183,13 +184,13 @@ GeoHashArea geohash_decode(GeoHashRange lat_range, GeoHashRange lon_range,
 // Fast implementation
 // ==================================================
 final _B = Uint64List.fromList([
-    0x5555555555555555, 0x3333333333333333, 0x0F0F0F0F0F0F0F0F, 
+    0x5555555555555555, 0x3333333333333333, 0x0F0F0F0F0F0F0F0F,
     0x00FF00FF00FF00FF, 0x0000FFFF0000FFFF, 0x00000000FFFFFFFF
 ]);
 final _S = Int8List.fromList([0,1,2,4,8,16]);
 
 // Interleave lower  bits of x and y, so the bits of x
-// are in the even positions and bits from y in the odd; 
+// are in the even positions and bits from y in the odd;
 // https://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN
 
 int _interleave64(int x, int y) {
@@ -211,7 +212,7 @@ int _interleave64(int x, int y) {
     return x | (y << 1);
 }
 
-///reverse the interleave process 
+///reverse the interleave process
 // http://stackoverflow.com/questions/4909263/how-to-efficiently-de-interleave-bits-inverse-morton
 int _deinterleave64(int i) {
     int x = i;
@@ -394,6 +395,112 @@ GeoHashBits geohash_next_righttop(GeoHashBits bits) {
     bits.bits <<= 2;
     bits.bits += 3;
     return bits;
+}
+
+// Validates that coordinates are within range we can handle
+// throws ArgumentError otherwise
+void validateCoords(double lat, double lon) {
+    if(lat == null)
+        throw ArgumentError.notNull("latitude");
+    if(lon == null)
+        throw ArgumentError.notNull("longitude");
+    if(lat < GeoHashRange.WGS84_LAT_MIN ||
+       lat > GeoHashRange.WGS84_LAT_MAX)
+       throw ArgumentError.value(
+            lat, "latitude",
+            "should be within range "
+            "${GeoHashRange.WGS84_LAT_MIN}-${GeoHashRange.WGS84_LAT_MAX}"
+       );
+    if(lon < GeoHashRange.WGS84_LON_MIN ||
+       lon > GeoHashRange.WGS84_LON_MAX)
+       throw ArgumentError.value(
+            lon, "longitude",
+            "should be within range "
+            "${GeoHashRange.WGS84_LON_MIN}-${GeoHashRange.WGS84_LON_MAX}"
+       );
+
+}
+
+double _degreesToRadians(double deg) => deg * (Math.pi/180.0);
+
+// Adopted from https://github.com/firebase/geofire-js
+// MIT License
+// Returns distance in meters between two points using 
+// haversine formula (assuming Earth is a sphere)
+double distance(double lat1, double lon1, double lat2, double lon2) {
+    validateCoords(lat1, lon1);
+    validateCoords(lat2, lon2);
+
+    const radius = 6371000; // Earth's radius
+    var latDelta = _degreesToRadians(lat2 - lat1);
+    var lonDelta = _degreesToRadians(lon2 - lon1);
+
+    var a = (Math.sin(latDelta / 2) * Math.sin(latDelta / 2)) +
+    (Math.cos(_degreesToRadians(lat1)) * Math.cos(_degreesToRadians(lat2)) *
+     Math.sin(lonDelta / 2) * Math.sin(lonDelta / 2));
+
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return radius * c;
+}
+
+
+class _RadiusBits {
+    final double radius; // Search radius in meters
+    final int    bits;   // Bits of geohash precision
+    static const _radiusBits = <_RadiusBits>[
+        _RadiusBits(52, 0.5971),
+        _RadiusBits(50, 1.1943),
+        _RadiusBits(48, 2.3889),
+        _RadiusBits(46, 4.7774),
+        _RadiusBits(44, 9.5547),
+        _RadiusBits(42, 19.1095),
+        _RadiusBits(40, 38.2189),
+        _RadiusBits(38, 76.4378),
+        _RadiusBits(36, 152.8757),
+        _RadiusBits(34, 305.751),
+        _RadiusBits(32, 611.5028),
+        _RadiusBits(30, 1223.0056),
+        _RadiusBits(28, 2446.0112),
+        _RadiusBits(26, 4892.0224),
+        _RadiusBits(24, 9784.0449),
+        _RadiusBits(22, 19568.0898),
+        _RadiusBits(20, 39136.1797),
+        _RadiusBits(18, 78272.35938),
+        _RadiusBits(16, 156544.7188),
+        _RadiusBits(14, 313089.4375),
+        _RadiusBits(12, 626178.875),
+        _RadiusBits(10, 1252357.75),
+        _RadiusBits(8, 2504715.5),
+        _RadiusBits(6, 5009431),
+        _RadiusBits(4, 10018863),
+    ];
+    const _RadiusBits(this.bits, this.radius);
+
+    // Finds appropriate bit width for geohash for given search radius in meters
+    static int findStepByRadius(double radius) {
+        if(radius < 0.5971 || radius > 10018863)
+            throw ArgumentError.value(radius, "radius",
+                "should be in range 0.5971-10018863m" );
+        // binary search, very clever
+        int min = 0;
+        int max = _RadiusBits._radiusBits.length;
+        int mid;
+        while(min < max) {
+            mid = min + ((max - min) >> 1);
+            final e = _RadiusBits._radiusBits[mid];
+            final diff = e.radius - radius;
+            if(diff.abs() < 0.00001) // this is our max precision in the table
+                return e.bits;       // we found exact radius
+            if(diff < 0.0)
+                min = mid + 1;
+            else
+                max = mid;
+        }
+        // If not exact match return bits for the next biggest radius
+        return _RadiusBits._radiusBits[mid].bits;
+    }
+
 }
 
 
