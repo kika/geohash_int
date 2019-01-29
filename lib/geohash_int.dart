@@ -58,12 +58,12 @@ class GeoHashBits {
     GeoHashBits clone() => GeoHashBits(this.bits, this.step);
     @override
     operator==(other) =>
-        identical(this, other) || 
-        other is GeoHashBits 
+        identical(this, other) ||
+        other is GeoHashBits
         && bits == other.bits
         && step == other.step;
     @override
-    String toString() => "GeoHash($bits:$step)";
+    String toString() => "GeoHash($bits,$step)";
 }
 
 class GeoHashRange {
@@ -83,7 +83,7 @@ class GeoHashRange {
         && (max - other.max).abs() < _EPSILON
         && (min - other.min).abs() < _EPSILON;
     @override
-    String toString() => "GeoHashRange($min:$max)";
+    String toString() => "GeoHashRange($min,$max)";
 }
 
 class GeoHashArea {
@@ -101,7 +101,7 @@ class GeoHashArea {
         && latitude == other.latitude
         && longitude == other.longitude;
     @override
-    String toString() => "GeoHashArea(hash: $hash, lat: $latitude, lon: $longitude)";
+    String toString() => "GeoHashArea($hash, $latitude, $longitude)";
 }
 
 class GeoHashNeighbors {
