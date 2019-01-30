@@ -5,6 +5,8 @@ description: Library to encode and decode integer based Geo hash codes
 author: "Kirill Pertsev <kika@kikap.com>"
 environment:
   sdk: ">=2.0.0 <3.0.0"
+dependencies:
+  quiver:
 dev_dependencies:
   sprintf:
   benchmark_harness:

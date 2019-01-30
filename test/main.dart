@@ -63,7 +63,30 @@ class GHBenchmarkFDec extends BenchmarkBase with GHBenchParams {
     void teardown() {}
 }
 
+void areatest(int step) {
+    final lat_range = GeoHashRange.getStandardRange(
+        GeoProjection.WGS84,
+        GeoCoordinate.Latitude
+    );
+    final lon_range = GeoHashRange.getStandardRange(
+        GeoProjection.WGS84,
+        GeoCoordinate.Longitude
+    );
+
+    final lat = 37.4270;
+    final lon = -122.1989;
+
+    final hash = geohash_fast_encode(lat_range, lon_range, lat, lon, step);
+    final area = geohash_fast_decode(lat_range, lon_range, hash);
+    assert(area.latitude.within(lat) && area.longitude.within(lon));
+    print("area: $area");
+}
+
 void main() {
+    for(int step = 1; step <= 26; step++) {
+        areatest(step);
+    }
+
     GHBenchmarkEnc().report();
     GHBenchmarkFEnc().report();
 

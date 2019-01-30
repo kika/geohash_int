@@ -32,6 +32,7 @@
 
 import 'dart:math' as Math;
 import 'dart:typed_data';
+import 'package:quiver/collection.dart';
 
 enum GeoDirection {
     GEOHASH_NORTH,
@@ -47,6 +48,11 @@ enum GeoDirection {
 enum GeoProjection {
     WGS84,
     Mercator,
+}
+
+enum GeoCoordinate {
+    Latitude,
+    Longitude,
 }
 
 const double _EPSILON = 0.000001;
@@ -74,8 +80,29 @@ class GeoHashRange {
     static const WGS84_LAT_MIN = -85.05113;
     static const WGS84_LON_MAX = 180.0;
     static const WGS84_LON_MIN = -180.0;
+
     GeoHashRange(this.min, this.max);
     GeoHashRange clone() => GeoHashRange(this.min, this.max);
+
+    bool within(double value, {bool inclusive: false}) =>
+        inclusive? value >= min && value <= max :
+                   value > min && value < max;
+
+    //ignore: missing_return
+    factory GeoHashRange.getStandardRange(GeoProjection proj, GeoCoordinate coord) {
+        switch(proj) {
+            case GeoProjection.WGS84:
+                switch(coord) {
+                    case GeoCoordinate.Latitude:
+                        return GeoHashRange(WGS84_LAT_MIN,WGS84_LAT_MAX);
+                    case GeoCoordinate.Longitude:
+                        return GeoHashRange(WGS84_LON_MIN,WGS84_LON_MAX);
+                }
+                break;
+            case GeoProjection.Mercator:
+                return GeoHashRange(-MERCATOR_MAX,MERCATOR_MAX);
+        }
+    }
     @override
     operator==(other) =>
         identical(this, other) ||
@@ -93,6 +120,10 @@ class GeoHashArea {
     GeoHashArea(this.hash, this.latitude, this.longitude);
     GeoHashArea clone() => GeoHashArea(this.hash.clone(), this.latitude.clone(),
                                        this.longitude.clone());
+
+    bool within(double lat, double lon, {bool inclusive: false}) =>
+        latitude.within(lat) && longitude.within(lon);
+
     @override
     operator==(other) =>
         identical(this, other) ||
@@ -263,7 +294,7 @@ GeoHashBits geohash_fast_encode(GeoHashRange lat_range, GeoHashRange lon_range,
     lon_offset *= (1 << step);
 
     //interleave the bits to create the morton code.  No branching and no bounding
-    hash.bits = _interleave64(lat_offset.toInt() & 0xFFFFFFFF, 
+    hash.bits = _interleave64(lat_offset.toInt() & 0xFFFFFFFF,
                               lon_offset.toInt() & 0xFFFFFFFF);
     return hash;
 }
@@ -367,35 +398,20 @@ GeoHashBits geohash_get_neighbor(GeoHashBits hash, GeoDirection direction) {
         case GeoDirection.GEOHASH_NORTH_EAST:
             x = 1; y = 1; break;
     }
-    return _geohash_move_y(_geohash_move_x(hash, x), y);
+    return _geohash_move_y(_geohash_move_x(hash.clone(), x).clone(), y);
 }
 
-GeoHashBits geohash_next_leftbottom(GeoHashBits bits) {
-    bits.step++;
-    bits.bits <<= 2;
-    return bits;
-}
+GeoHashBits geohash_next_leftbottom(GeoHashBits bits) =>
+    GeoHashBits(bits.bits << 2, bits.step + 1);
 
-GeoHashBits geohash_next_rightbottom(GeoHashBits bits) {
-    bits.step++;
-    bits.bits <<= 2;
-    bits.bits += 2;
-    return bits;
-}
+GeoHashBits geohash_next_rightbottom(GeoHashBits bits) =>
+    GeoHashBits((bits.bits << 2) + 2, bits.step + 1);
 
-GeoHashBits geohash_next_lefttop(GeoHashBits bits) {
-    bits.step++;
-    bits.bits <<= 2;
-    bits.bits += 1;
-    return bits;
-}
+GeoHashBits geohash_next_lefttop(GeoHashBits bits) =>
+    GeoHashBits((bits.bits << 2) + 1, bits.step + 1);
 
-GeoHashBits geohash_next_righttop(GeoHashBits bits) {
-    bits.step++;
-    bits.bits <<= 2;
-    bits.bits += 3;
-    return bits;
-}
+GeoHashBits geohash_next_righttop(GeoHashBits bits) =>
+    GeoHashBits((bits.bits << 2) + 3, bits.step + 1);
 
 // Validates that coordinates are within range we can handle
 // throws ArgumentError otherwise
@@ -421,13 +437,13 @@ void validateCoords(double lat, double lon) {
 
 }
 
-double _degreesToRadians(double deg) => deg * (Math.pi/180.0);
+double _degreesToRadians(double deg) => (deg * Math.pi)/180.0;
 
 // Adopted from https://github.com/firebase/geofire-js
 // MIT License
-// Returns distance in meters between two points using 
+// Returns distance in meters between two points using
 // haversine formula (assuming Earth is a sphere)
-double distance(double lat1, double lon1, double lat2, double lon2) {
+double haversineDistance(double lat1, double lon1, double lat2, double lon2) {
     validateCoords(lat1, lon1);
     validateCoords(lat2, lon2);
 
@@ -498,9 +514,154 @@ class _RadiusBits {
                 max = mid;
         }
         // If not exact match return bits for the next biggest radius
-        return _RadiusBits._radiusBits[mid].bits;
+        return _RadiusBits._radiusBits[min].bits;
     }
 
 }
 
+TreeSet<GeoHashBits>
+geohash_get_areas_by_radius(double lat, double lon, double radius) {
+    final results = TreeSet<GeoHashBits>(
+        comparator: (a, b) {
+            if(a.step < b.step)
+                return -1;
+            if(a.step > b.step)
+                return 1;
+            if(a.bits < b.bits)
+                return -1;
+            if(a.bits > b.bits)
+                return 1;
+            return 0;
+        }
+    );
+    final lat_range = GeoHashRange.getStandardRange(
+        GeoProjection.WGS84, GeoCoordinate.Latitude
+    );
+    final lon_range = GeoHashRange.getStandardRange(
+        GeoProjection.WGS84, GeoCoordinate.Longitude
+    );
+    final double delta_lon = radius / (111320.0 * Math.cos(_degreesToRadians(lat)));
+    final double delta_lat = radius / 110540.0;
+    final double max_lat = lat + delta_lat;
+    final double min_lat = lat - delta_lat;
+    final double max_lon = lon + delta_lon;
+    final double min_lon = lon - delta_lon;
+    final int steps = _RadiusBits.findStepByRadius(radius) >> 1;
+    final hash = geohash_fast_encode(lat_range, lon_range, lat, lon, steps);
+    final area = geohash_fast_decode(lat_range, lon_range, hash);
+    assert(area.within(lat, lon));
+
+    results.add(hash);
+    final double range_lon = (area.longitude.max - area.longitude.min) / 2;
+    final double range_lat = (area.latitude.max - area.latitude.min) / 2;
+    bool split_east = false;
+    bool split_west = false;
+    bool split_north = false;
+    bool split_south = false;
+    GeoHashNeighbors hood = GeoHashNeighbors();
+
+    if(max_lon > area.longitude.max) {
+        hood.east = geohash_get_neighbor(hash, GeoDirection.GEOHASH_EAST);
+        if(area.longitude.max + range_lon > max_lon) {
+            results.add(geohash_next_leftbottom(hood.east));
+            results.add(geohash_next_lefttop(hood.east));
+            split_east = true;
+        } else {
+            results.add(hood.east);
+        }
+    }
+    if(min_lon < area.longitude.min){
+        hood.west = geohash_get_neighbor(hash, GeoDirection.GEOHASH_WEST);
+        if(area.longitude.min - range_lon < min_lon) {
+            results.add(geohash_next_rightbottom(hood.west));
+            results.add(geohash_next_righttop(hood.west));
+            split_west = true;
+        } else {
+            results.add(hood.west);
+        }
+    }
+    if(max_lat > area.latitude.max) {
+        hood.north = geohash_get_neighbor(hash, GeoDirection.GEOHASH_NORTH);
+        if(area.latitude.max + range_lat > max_lat) {
+            results.add(geohash_next_rightbottom(hood.north));
+            results.add(geohash_next_leftbottom(hood.north));
+            split_north = true;
+        } else {
+            results.add(hood.north);
+        }
+    }
+    if(min_lat < area.latitude.min) {
+        hood.south = geohash_get_neighbor(hash, GeoDirection.GEOHASH_SOUTH);
+        if(area.latitude.min - range_lat < min_lat) {
+            results.add(geohash_next_righttop(hood.south));
+            results.add(geohash_next_lefttop(hood.south));
+            split_south = true;
+        } else {
+            results.add(hood.south);
+        }
+    }
+    if(max_lon > area.longitude.max && max_lat > area.latitude.max) {
+        hood.north_east = geohash_get_neighbor(hash, GeoDirection.GEOHASH_NORTH_EAST);
+        if(split_north && split_east) {
+            results.add(geohash_next_leftbottom(hood.north_east));
+        }
+        else if (split_north)
+        {
+            results.add(geohash_next_rightbottom(hood.north_east));
+            results.add(geohash_next_leftbottom(hood.north_east));
+        }
+        else if (split_east)
+        {
+            results.add(geohash_next_leftbottom(hood.north_east));
+            results.add(geohash_next_lefttop(hood.north_east));
+        }
+        else
+        {
+            results.add(hood.north_east);
+        }
+    }
+    if(max_lon > area.longitude.max && min_lat < area.latitude.min) {
+        hood.south_east = geohash_get_neighbor(hash, GeoDirection.GEOHASH_SOUTH_EAST);
+        if(split_south && split_east) {
+            results.add(geohash_next_lefttop(hood.south_east));
+        } else if(split_south) {
+            results.add(geohash_next_righttop(hood.south_east));
+            results.add(geohash_next_lefttop(hood.south_east));
+        } else if(split_east) {
+            results.add(geohash_next_leftbottom(hood.south_east));
+            results.add(geohash_next_lefttop(hood.south_east));
+        } else {
+            results.add(hood.south_east);
+        }
+    }
+    if(min_lon < area.longitude.min && max_lat > area.latitude.max) {
+        hood.north_west = geohash_get_neighbor(hash, GeoDirection.GEOHASH_NORTH_WEST);
+        if(split_north && split_west) {
+            results.add(geohash_next_rightbottom(hood.north_west));
+        } else if(split_north) {
+            results.add(geohash_next_rightbottom(hood.north_west));
+            results.add(geohash_next_leftbottom(hood.north_west));
+        } else if(split_west) {
+            results.add(geohash_next_rightbottom(hood.north_west));
+            results.add(geohash_next_righttop(hood.north_west));
+        } else {
+            results.add(hood.north_west);
+        }
+    }
+    if(min_lon < area.longitude.min && min_lat < area.latitude.min) {
+        hood.south_west = geohash_get_neighbor(hash, GeoDirection.GEOHASH_SOUTH_WEST);
+        if(split_south && split_west) {
+            results.add(geohash_next_righttop(hood.south_west));
+        } else if(split_south) {
+            results.add(geohash_next_righttop(hood.south_west));
+            results.add(geohash_next_lefttop(hood.south_west));
+        } else if(split_west) {
+            results.add(geohash_next_rightbottom(hood.south_west));
+            results.add(geohash_next_righttop(hood.south_west));
+        } else {
+            results.add(hood.south_west);
+        }
+    }
+    return results;
+}
 
